@@ -1,0 +1,168 @@
+CC 		= 	/usr/bin/gcc
+CC2		= 	/usr/bin/gcc
+DATASOURCE      =       SAM1
+DB2INSTANCEPATH =       /home/$(DB2INSTANCE)
+DBPATH		=	/node1/data0/db2/S2T01/IT99/metadata/$(DATASOURCE)
+TABLEPATH	=	/node1/data0/db2/S2T01/IT99/tablespaces/$(DATASOURCE)
+STOGRFIRST	=	/node1/data0/db2/S2T01/IT99/tablespaces/$(DATASOURCE)/FIRST
+STOGRPSECOND	=	/node1/data0/db2/S2T01/IT99/tablespaces/$(DATASOURCE)/SECOND
+DBLOGPATH	=	/node1/logs/db2/S2T01/IT99/log/$(DATASOURCE)
+DBARCHIVELOG	=	/node1/logs/db2/S2T01/IT99/archive/$(DATASOURCE)
+BACKUPDIR       =       /node1/data0/db2/S2T01/IT99/backup/$(DB2INSTANCE)
+CFLAGS 		= 	-g -w 
+LIBDIR 		= 	-L$(DB2LIB) -ldb2
+INCLUDE 	= 	-I$(DB2_HOME)/include
+OBJ		=	db2schulung.o
+SHELL		=	/bin/bash
+REPLVER		:=	$(shell date +%y%m%d%H%M%S)
+
+.SUFFIXES:  .c .sqc
+.sqc.c:
+	db2 connect to $(DATASOURCE)
+	db2 prep $> bindfile
+	db2 bind $*.bnd
+	cp $@ $@.tmp
+	db2 terminate
+
+
+all : db2schulung
+db2schulung.c:	db2schulung.sqc
+db2schulung:	db2schulung.c
+	$(CC) $(CFLAGS) $(INCLUDE) $(LIBDIR) -o $@ $>
+createdb:	dropdb
+		mkdir -p $(DBPATH)
+		rm -rf $(DBPATH)/*
+		mkdir -p $(TABLEPATH)
+		rm -rf $(TABLEPATH)/*
+		db2 CREATE DATABASE $(DATASOURCE) ON $(TABLEPATH) DBPATH ON $(DBPATH) USING CODESET 850 TERRITORY US COLLATE USING IDENTITY PAGESIZE 8192 DFT_EXTENT_SZ 32 CATALOG TABLESPACE MANAGED BY AUTOMATIC STORAGE EXTENTSIZE 4 AUTORESIZE YES INITIALSIZE 32 M MAXSIZE NONE TEMPORARY TABLESPACE MANAGED BY AUTOMATIC STORAGE EXTENTSIZE 32 FILE SYSTEM CACHING USER TABLESPACE MANAGED BY AUTOMATIC STORAGE EXTENTSIZE 32 AUTORESIZE YES INITIALSIZE 32 M MAXSIZE NONE
+		rm -rf $(DBLOGPATH)/*
+		mkdir -p $(DBLOGPATH)
+		db2 update database configuration for $(DATASOURCE) using NEWLOGPATH $(DBLOGPATH)
+		db2 connect to $(DATASOURCE)
+		db2 CREATE BUFFERPOOL "BP4_FIRST"   IMMEDIATE PAGESIZE  4 K
+		db2 CREATE BUFFERPOOL "BP8_SECOND"   IMMEDIATE PAGESIZE  8 K
+		mkdir -p $(STOGRFIRST) $(STOGRPSECOND)
+		db2 "CREATE STOGROUP TS_FIRST ON '$(STOGRFIRST)'"
+		db2 "CREATE STOGROUP TS_SECOND ON '$(STOGRPSECOND)'"
+		db2 CREATE LARGE TABLESPACE TS4_FIRST PAGESIZE  4K BUFFERPOOL BP4_FIRST USING STOGROUP TS_FIRST
+		db2 CREATE LARGE TABLESPACE TS8_SECOND PAGESIZE  8K BUFFERPOOL BP8_SECOND  USING STOGROUP TS_SECOND
+		db2 terminate
+
+		rm -rf $(DBLOGPATH)/*
+		mkdir -p $(DBLOGPATH)
+		db2 update database configuration for $(DATASOURCE) using NEWLOGPATH $(DBLOGPATH)
+		rm -rf $(DBARCHIVELOG)/*
+		mkdir -p $(DBARCHIVELOG)
+		db2 update database configuration for $(DATASOURCE) using LOGARCHMETH1 'DISK:$(DBARCHIVELOG)'
+		rm -rf $(BACKUPDIR)/$(DATASOURCE)
+		mkdir -p $(BACKUPDIR)/$(DATASOURCE)
+		db2 backup database $(DATASOURCE) to $(BACKUPDIR)/$(DATASOURCE) compress
+		db2 backup database $(DATASOURCE) online to $(BACKUPDIR)/$(DATASOURCE) compress include logs
+		db2 update database configuration for $(DATASOURCE) using TRACKMOD YES 
+		db2 deactivate database $(DATASOURCE)
+		db2 activate database $(DATASOURCE)
+		db2 backup database $(DATASOURCE) online to $(BACKUPDIR)/$(DATASOURCE) compress include logs
+		db2 backup database $(DATASOURCE) online incremental to $(BACKUPDIR)/$(DATASOURCE) compress include logs
+		db2 backup database $(DATASOURCE) online incremental delta to $(BACKUPDIR)/$(DATASOURCE) compress include logs
+
+savelog:
+		mkdir -p ./log/sav
+		cp -R $(DBLOGPATH) ./log/sav
+dropdb:
+		db2 drop database $(DATASOURCE)
+createtable:
+		db2 connect to $(DATASOURCE) 
+		db2 "create table TEST.T000001 (\
+			ind integer not null generated always as identity (start with 1 increment by 1),\
+			pid integer not null default 1,\
+			date date not null default current date,\
+			time time not null default current time,\
+			object varchar(255) ,\
+			primary key (ind)) in TS4_FIRST "
+		db2 "CREATE INDEX TEST.I0100001 ON TEST.T000001 (ind ASC,object ASC) COMPRESS NO INCLUDE NULL KEYS ALLOW REVERSE SCANS"
+
+		db2 "create alias $(DB2INSTANCE).ASTRO for TEST.T000001"
+		db2 "create table TEST.T000002 (\
+			ind integer not null generated always as identity (start with 1 increment by 1),\
+			pid integer not null default 1,\
+			date date not null default current date,\
+			time time not null default current time,\
+			animal varchar(255) ,\
+			primary key (ind)) in TS8_SECOND"
+		db2 "CREATE INDEX TEST.I0100002 ON TEST.T000002 (ind ASC,animal ASC) COMPRESS NO INCLUDE NULL KEYS ALLOW REVERSE SCANS"
+
+		db2 "create alias $(DB2INSTANCE).ANIMALS for TEST.T000002"
+		db2 terminate
+getenvironment:
+		db2level
+		cat /etc/system-release
+getdbpath:
+		db2 connect to $(DATASOURCE) 
+		db2 -x "SELECT char(TYPE,20),char(PATH,80) FROM SYSIBMADM.DBPATHS"
+		export LOGPATH=`db2 -x "select substr(type,1,30),substr(path,1,70) from SYSIBMADM.DBPATHS"|grep LOGPATH|awk '{print $$2}'`
+		db2 terminate
+droptable:
+		db2 connect to $(DATASOURCE) 
+		db2 "drop table TEST.T000001"
+		db2 "drop alias $(DB2INSTANCE).ASTRO"
+		db2 "drop table TEST.T000002"
+		db2 "drop alias $(DB2INSTANCE).ANIMALS"
+		db2 terminate
+reorgrunstat:
+		db2 connect to $(DATASOURCE) 
+		db2 "reorg table $(DB2INSTANCE).astro"
+		db2 "runstats on table $(DB2INSTANCE).astro"
+		db2 terminate
+
+emptytable:
+		db2 connect to $(DATASOURCE) 
+		db2 "delete from $(DB2INSTANCE).astro"
+		db2 terminate
+initdb:		dropdb createdb createtable filltable1
+#BACKUP
+backup:
+		db2 backup database $(DATASOURCE) to $(BACKUPDIR) compress
+backup_online:
+		db2 backup database $(DATASOURCE) online to $(BACKUPDIR) compress include logs
+backup_online_incremental:
+		db2 backup database $(DATASOURCE) online incremental to $(BACKUPDIR) compress include logs
+backup_online_incremental_delta:
+		db2 backup database $(DATASOURCE) online incremental delta to $(BACKUPDIR) compress include logs
+# Snapshot Tests
+presnap:
+		rm -rf .sav/*
+		rm -f pathout2 pathout snap.bash resnap.bash a.test
+		db2 connect to $(DATASOURCE)
+		db2 -z pathout -x "select * from SYSIBMADM.DBPATHS"
+		grep -v MEMBER pathout > pathout2
+		grep -v LOGPATH pathout2 > pathout3
+		awk '{print "mkdir -p ./sav"$$3";cp -R",$$3"* ./sav"$$3}' pathout3 > snap.bash
+		awk '{print "mkdir -p",$$3";cp -R ./sav"$$3"/*",$$3}' pathout3 > resnap.bash
+		chmod a+rx snap.bash resnap.bash
+		db2 terminate
+snap:
+		db2 connect to $(DATASOURCE)
+		db2 set write suspend for database exclude logs
+		bash ./snap.bash
+		db2 set write resume for database
+		db2 terminate
+savlog:
+		mkdir -p ./log/archive/$(DATASOURCE)
+		mkdir -p ./log/log/$(DATASOURCE)
+		cp -R $(DBLOGPATH)/* ./log/log/$(DATASOURCE)
+		cp -R $(DBARCHIVELOG)/* ./log/archive/$(DATASOURCE)
+resnap:
+		bash ./resnap.bash
+postsnap:
+		db2 catalog database $(DATASOURCE) on $(DBPATH)
+		cp ./log/archive/$(DATASOURCE)/* $(DBARCHIVELOG) 
+		cp ./log/log/$(DATASOURCE)/* $(DBLOGPATH) 
+#		db2 restart database $(DATASOURCE) write resume
+		db2inidb $(DATASOURCE) as STANDBY
+		db2 rollforward database $(DATASOURCE) to end of logs and stop logretain ($(DBARCHIVELOG))
+rebuilddb:      savelog dropdb resnap postsnap
+cleansnap:
+		rm -rf pathout pathout2 pathout3 snap.bash resnap.bash ./sav ./log
+
+clean:
+	rm -f *.c.c *.i *.o *.bnd *.tmp $(OBJ) db2schulung db2schulung.c *.trc
